@@ -1,0 +1,49 @@
+# Test CI for the standalone verifier.
+#
+# The verifier is the tool an auditor is told to build instead of
+# trusting a binary from Mesedi, so this repository proves on every
+# push that a clean checkout builds and its tests pass. Anything less
+# would make "build it yourself" an instruction that sometimes fails.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Least-privilege: these jobs only read the tree and run tests.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: build, vet, gofmt, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "gofmt would change these files:"
+            echo "$out"
+            exit 1
+          fi
+      - name: go test
+        run: go test ./...

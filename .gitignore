@@ -1,0 +1,8 @@
+# Built binary
+/mesedi-verify
+
+# Local audit scope files, machine-readable inputs to a local gate.
+.audit-scope-*.json
+
+# Editor and OS noise
+.DS_Store

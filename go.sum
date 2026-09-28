@@ -1,0 +1,4 @@
+github.com/go-pdf/fpdf v0.9.0 h1:PPvSaUuo1iMi9KkaAn90NuKi+P4gwMedWPHhj8YlJQw=
+github.com/go-pdf/fpdf v0.9.0/go.mod h1:oO8N111TkmKb9D7VvWGLvLJlaZUQVPM+6V42pp3iV4Y=
+github.com/mesedi-ai/mesedi/backend/attest v0.1.0 h1:n58Dnuws4bUPCwn0E/Tj2+N+y0ibQcTXTU9K9Mu93hw=
+github.com/mesedi-ai/mesedi/backend/attest v0.1.0/go.mod h1:FTj2z9/KDT0lqqToJD0IZqr/a1ioJ5ZYdriU/VoPH5I=

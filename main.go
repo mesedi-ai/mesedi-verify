@@ -392,10 +392,7 @@ func main() {
 		}
 		if growth.Unproven > 0 {
 			rep.Structural.Unverified = append(rep.Structural.Unverified,
-				fmt.Sprintf("Whether the public log only grew is not shown for %s here. "+
-					"That needs a proof captured at the time each hour was published, "+
-					"and hours published before 5 September 2026 carry none.",
-					countOf(growth.Unproven, "hour", "hours")))
+				unprovenGrowthNote(growth.Unproven))
 		}
 	}
 

@@ -294,6 +294,19 @@ func countOf(n int, one, many string) string {
 	return fmt.Sprintf("%d %s", n, many)
 }
 
+// unprovenGrowthNote says what is missing for hours with no growth proof,
+// without guessing why. Hours published before 5 September 2026 never
+// had one. A later hour can lack one too: the log did not answer, its
+// answer did not hold, or, as in the real-log run of 16 November 2026,
+// the anchorer did not keep it.
+func unprovenGrowthNote(n int) string {
+	return fmt.Sprintf("Whether the public log only grew is not shown for %s here: "+
+		"the export carries no growth proof for them. That proof is saved when each "+
+		"hour is published. Hours published before 5 September 2026 never had one; "+
+		"for a later hour it means none was saved at the time.",
+		countOf(n, "hour", "hours"))
+}
+
 // growthSummary is the one sentence this goes into the report as.
 func growthSummary(res growthResult) string {
 	switch {

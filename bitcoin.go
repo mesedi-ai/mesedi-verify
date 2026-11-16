@@ -128,6 +128,12 @@ func checkIntervalTimestamps(ctx context.Context, iv attest.ExportedInterval, sr
 		return c
 	}
 	var pending, unchecked []string
+	// The earliest block any receipt reaches is what the receipts prove:
+	// the checkpoint existed by the time that block was mined. Every
+	// claim is still checked, and any false one fails the checkpoint.
+	var earliest uint64
+	var earliestMined time.Time
+	blocks := map[uint64]bool{}
 	for _, r := range iv.Timestamps {
 		ts, err := attest.ParseOTSTimestamp(digest, r.Receipt)
 		if err != nil {
@@ -157,11 +163,18 @@ func checkIntervalTimestamps(ctx context.Context, iv attest.ExportedInterval, sr
 				return c
 			}
 			c.Status = StatusVerified
-			c.Detail = fmt.Sprintf("in Bitcoin block %d, mined %s", cl.Height, mined.Format(time.RFC3339))
+			blocks[cl.Height] = true
+			if earliest == 0 || cl.Height < earliest {
+				earliest, earliestMined = cl.Height, mined
+			}
 		}
 	}
 	switch {
 	case c.Status == StatusVerified:
+		c.Detail = fmt.Sprintf("in Bitcoin block %d, mined %s", earliest, earliestMined.Format(time.RFC3339))
+		if len(blocks) > 1 {
+			c.Detail += fmt.Sprintf(", the earliest of %d blocks its receipts reach", len(blocks))
+		}
 	case len(unchecked) > 0:
 		c.Status = StatusUnverifiable
 		c.Detail = "not compared with Bitcoin: " + strings.Join(unchecked, "; ")

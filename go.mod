@@ -4,5 +4,5 @@ go 1.27.4
 
 require (
 	github.com/go-pdf/fpdf v0.9.0
-	github.com/mesedi-ai/mesedi/backend/attest v0.2.0
+	github.com/mesedi-ai/mesedi/backend/attest v0.3.0
 )

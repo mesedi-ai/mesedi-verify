@@ -1,6 +1,6 @@
 package main
 
-// Fixes of 2026-11-16 (outside review findings E5, E6, E23).
+// Fixes of 2026-11-16 (the outside review of 2026-11-15).
 
 import (
 	"context"

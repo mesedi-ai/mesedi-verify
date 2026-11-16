@@ -41,8 +41,8 @@ import (
 //	signed root     → Rekor's pinned public key   (VerifyAnchor)
 //
 // Drop the middle link and every remaining check still passes, on
-// somebody else's entry. That is the same defect verdifax-verify shipped
-// with, historically: the recipe was documented and never executed.
+// somebody else's entry. A verifier that documents the binding step
+// without executing it has shipped elsewhere; it must not here.
 
 // anchorProof is the envelope Mesedi stores in
 // checkpoints.anchor_proof_json and emits as ExportedInterval.AnchorProof.
@@ -52,15 +52,14 @@ type anchorProof struct {
 	InclusionProof json.RawMessage `json:"inclusion_proof"`
 }
 
-// wireInclusionProof mirrors the proof as Verdifax serialises it.
+// wireInclusionProof is the stored inclusion proof.
 //
-// Deliberately WITHOUT json tags. Verdifax's pkg/ledger.InclusionProof
-// has no tags either, so its field names on the wire are whatever Go's
-// default marshalling produces, an accident, not a designed contract.
-// Leaving the tags off here means encoding/json falls back to
-// case-insensitive matching, so this keeps parsing if that struct ever
-// gains explicit lower-case tags. It would NOT survive a rename to
-// snake_case, which is why the source side pins the names with a test.
+// Deliberately WITHOUT json tags. Proofs stored before 2026-11-16 have
+// PascalCase keys (LogIndex, TreeSize), and Rekor's own answers, stored
+// since, have camelCase keys (logIndex, treeSize). Without tags
+// encoding/json matches case-insensitively, so both read. A rename to
+// snake_case would not read, which is why the source side pins the names
+// with a test.
 type wireInclusionProof struct {
 	LogIndex   int64
 	RootHash   string
@@ -128,7 +127,7 @@ func verifyAnchorOffline(iv attest.ExportedInterval) offlineResult {
 	// A proof that names no log cannot be checked against a key. Until
 	// 2026-11-16 it reached VerifyAnchor and was decided FAILED by input
 	// validation; it is a note, and the online path may still check it
-	// (outside review finding E23).
+	// (the outside review of 2026-11-15).
 	if env.LogID == "" {
 		return offlineResult{Note: "the anchor proof names no log, so it could not be " +
 			"checked offline"}
@@ -146,8 +145,13 @@ func verifyAnchorOffline(iv attest.ExportedInterval) offlineResult {
 		return res
 	}
 
+	// The Merkle leaf is computed from the entry body. LeafHashHex is NOT
+	// passed: it is a different value (the RFC 6962 leaf), and passing the
+	// entry's recorded data hash under that name made every real entry fail
+	// once the checker required the two to agree (caught by the real-log
+	// run of 2026-11-16, before release). The binding step above already
+	// ties the body to this checkpoint's preimage.
 	if err := VerifyAnchor(AnchorInput{
-		LeafHashHex:   leafHashOf(iv.LeafPreimage),
 		EntryBody:     env.EntryBody,
 		LogIndex:      proof.LogIndex,
 		TreeSize:      proof.TreeSize,
@@ -233,7 +237,7 @@ func bindEntryToLeaf(entryBodyB64, leafPreimage string) (offlineResult, bool) {
 		}, false
 	}
 	// The online path refuses anything but a hashedrekord; until 2026-11-16
-	// the offline path did not check (outside review finding E23). Checked
+	// the offline path did not check (the outside review of 2026-11-15). Checked
 	// after the hash binds, so a malformed proof still falls through to
 	// the online check rather than accusing the record.
 	if body.Kind != "hashedrekord" {

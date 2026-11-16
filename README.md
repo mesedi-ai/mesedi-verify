@@ -4,7 +4,7 @@ Standalone, independent verifier for a Mesedi chain export. It exists
 so an auditor never has to take Mesedi's word for anything: given an
 export file, it recomputes every hash from the export's own contents,
 then resolves each checkpoint against a public transparency log
-(Sigstore Rekor) that neither Mesedi nor Verdifax controls. Mesedi is
+(Sigstore Rekor) that Mesedi does not control. Mesedi is
 not contacted and no Mesedi credential is used.
 
 ## Build it yourself
@@ -29,6 +29,14 @@ out the version the report states before building.
                                             against Sigstore's key, but not WHEN
                                             each hour was published
     mesedi-verify --rekor <url> export.json
+    mesedi-verify --trusted-key key.pem export.json
+                                            also trust anchors signed by this
+                                            public key (a self-hosted
+                                            deployment's own); may be repeated
+    mesedi-verify --bitcoin-api <url> export.json
+                                            the block explorer used to read
+                                            Bitcoin blocks (default
+                                            https://blockstream.info/api)
 
 ## What a run checks
 
@@ -38,6 +46,18 @@ out the version the report states before building.
   ended still verifies, but the report says how late: a late anchor
   proves the record existed when it was published, not when its hour
   ended. Offline runs cannot check this; the report says so.
+- **Who signed** each log entry. Since 16 November 2026 Mesedi signs
+  every anchor with its own key. The entry must name one of Mesedi's
+  published keys (or one passed with `--trusted-key`), its signature
+  must verify, and the anchored text must be exactly this hour's.
+  Hours anchored before then went through a third-party service; the
+  report says their signer is not checked.
+- **Bitcoin timestamps.** Each hour since 16 November 2026 is also
+  timestamped in Bitcoin through OpenTimestamps, independently of
+  Sigstore. A complete receipt must lead to its block's real Merkle
+  root. Offline, the report names the block and the value, which any
+  Bitcoin node can confirm. A pending receipt is not a failure; a false
+  one is.
 - A log that cannot be reached, or answers with a server error, makes a
   checkpoint UNVERIFIABLE, never FAILED: the record is not known to be
   wrong, it just could not be checked.
@@ -60,8 +80,7 @@ out the version the report states before building.
 
 This tool lived at backend/cmd/mesedi-verify in
 https://github.com/mesedi-ai/mesedi until 2026-09-28 and was extracted
-here so it stands alone from the system it verifies, the same way
-verdifax-verify stands alone from verdifax-orchestrator. Verification
+here so it stands alone from the system it verifies. Verification
 reports issued before the extraction pin a mesedi commit; those
 instructions remain valid, because the pinned commits still contain
 the tool. The extraction commit in this repository names the exact

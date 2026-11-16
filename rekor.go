@@ -18,8 +18,7 @@ import (
 // This is the file that makes the report evidence rather than
 // self-assessment. Everything else in this binary checks that Mesedi's
 // export is internally consistent, which a Mesedi that lied consistently
-// would also pass. Only asking a log that neither Mesedi nor Verdifax
-// controls whether a given hash is actually in it breaks that circle.
+// would also pass. Only asking a log Mesedi does not control whether a given hash is actually in it breaks that circle.
 //
 // WHAT IS CHECKED: that the entry at the claimed log index is a
 // hashedrekord whose recorded sha256 is the checkpoint's hash.
@@ -35,7 +34,7 @@ import (
 // that comes with Mesedi's own anchoring key. (This comment said the tree
 // head was never checked and that proofs were discarded at anchor time;
 // both stopped being true when the offline path shipped, outside review
-// finding E26.)
+// the outside review of 2026-11-15.)
 
 // DefaultRekorURL is Sigstore's public good instance, free, with a 99.5%
 // availability SLO, and operated by neither party to this transaction,
@@ -69,7 +68,12 @@ type LogEntryCheck struct {
 	Seq      uint64
 	LogIndex string
 	Status   string
-	Detail   string
+
+	// Signer says who signed the log entry: the fingerprint of a trusted
+	// key for an anchor Mesedi made itself, or why it was not checked.
+	// Filled by checkSigners after the entry is resolved.
+	Signer string
+	Detail string
 
 	// Integrated is when the log says it incorporated the entry. Zero
 	// unless the entry was actually retrieved.
@@ -150,12 +154,20 @@ type rekorEntry struct {
 	LogID          string `json:"logID"`
 }
 
-// hashedRekordBody is the decoded Body. Only the recorded digest is read;
-// the signature and public key in the entry attest that Verdifax submitted
-// it, which is a separate question from whether the hash is in the log.
+// hashedRekordBody is the decoded Body: the recorded digest, and the
+// signature and public key that say who submitted it (checked in
+// signer.go for anchors Mesedi signs itself).
 type hashedRekordBody struct {
 	Kind string `json:"kind"`
 	Spec struct {
+		Signature struct {
+			Content string `json:"content"`
+			// Untagged: Sigstore names it publicKey, and encoding/json
+			// matches an untagged field case-insensitively.
+			PublicKey struct {
+				Content string `json:"content"`
+			}
+		} `json:"signature"`
 		Data struct {
 			Hash struct {
 				Algorithm string `json:"algorithm"`
@@ -263,7 +275,7 @@ func (c *rekorClient) lookup(ctx context.Context, logIndex string) (string, time
 // record may be fine; the log could not be asked. Reported UNVERIFIABLE.
 // Until 2026-11-16 these were reported FAILED, the word reserved for "the
 // log disagrees with the export", contradicting the three-outcome rule
-// above (outside review finding E6). A 404 stays a failure: it means the
+// above (the outside review of 2026-11-15). A 404 stays a failure: it means the
 // log answered and has no such entry.
 type logUnreachable struct{ err error }
 
@@ -273,5 +285,5 @@ func (u logUnreachable) Unwrap() error { return u.err }
 // lateAnchorTolerance is how long after its hour ends a checkpoint may be
 // published and still count as on time. The scheduler publishes within
 // minutes; anything later is catch-up after downtime, or backdating, and
-// the report names it (Robert's decision, 2026-11-16; finding E5).
+// the report names it (Robert's decision, 2026-11-16; the outside review of 2026-11-15).
 const lateAnchorTolerance = 2 * time.Hour

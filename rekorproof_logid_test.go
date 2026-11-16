@@ -4,10 +4,8 @@ import "testing"
 
 // Guards the trusted root.
 //
-// Deliberately in its own file rather than added to rekorproof_test.go,
-// which is a verbatim copy of the upstream test file and must stay
-// diffable against verdifax-orchestrator/internal/rekorverify when the
-// two copies are re-synced. Local additions go here.
+// Kept in its own file, apart from the proof walk's tests in
+// rekorproof_test.go.
 //
 // WHY THIS TEST IS WORTH MORE THAN IT LOOKS
 //

@@ -259,10 +259,9 @@ func TestOfflineDoesNotBlameTheRecordForTheVerifiersKey(t *testing.T) {
 	}
 }
 
-// Verdifax serialises pkg/ledger.InclusionProof with no JSON tags, so its
-// field names on the wire are Go's defaults. This parser has no tags
-// either, which makes encoding/json match case-insensitively, so it
-// keeps working if that struct ever gains lower-case tags. Pinned here
+// Stored proofs come with PascalCase keys (before 2026-11-16) and
+// camelCase keys (Rekor's own, since). This parser has no tags, which
+// makes encoding/json match case-insensitively, so both read. Pinned here
 // because the tolerance is a property of leaving tags off, and someone
 // "tidying up" by adding them would remove it.
 func TestOfflineParsesTheProofWhateverTheCaseOfItsKeys(t *testing.T) {

@@ -261,6 +261,18 @@ func buildPDFDoc(rep report, exportSHA string) pdfDoc {
 		}
 		d.Sections = append(d.Sections, logs)
 	}
+	if len(rep.Bitcoin) > 0 {
+		btc := pdfSection{Title: "BITCOIN TIMESTAMPS"}
+		for _, c := range rep.Bitcoin {
+			btc.Rows = append(btc.Rows, pdfRow{Mark: statusMark(c.Status),
+				Label: fmt.Sprintf("checkpoint %d", c.Seq), Detail: c.Detail})
+		}
+		if rep.BitcoinSummary != "" {
+			btc.Rows = append(btc.Rows, pdfRow{Mark: statusMark(StatusVerified), Label: "summary",
+				Detail: rep.BitcoinSummary})
+		}
+		d.Sections = append(d.Sections, btc)
+	}
 
 	// Carried verbatim from the verification result. Rewording them here
 	// would create a second, softer version of the caveats that only the

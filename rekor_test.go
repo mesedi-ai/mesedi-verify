@@ -158,7 +158,7 @@ func TestRekorLookupRejectsANonIndexEntryID(t *testing.T) {
 	}
 }
 
-// leafFor builds a canonical leaf preimage the way Verdifax does, with
+// leafFor builds a leaf preimage in the format used before 2026-11-16, with
 // the checkpoint hash in the digest position, and returns it alongside
 // the sha256 the log would record for it.
 //

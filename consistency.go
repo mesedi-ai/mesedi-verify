@@ -33,7 +33,8 @@ import (
 // log's own. The report says so, in the section that says what it does
 // not show, and that sentence must not be deleted when this one lands.
 
-// consistencyProofWire is the proof as Verdifax serialises it.
+// consistencyProofWire is the stored consistency proof: Rekor's hashes
+// plus the two tree sizes, which Rekor's answer leaves out.
 //
 // The two ROOT hashes are deliberately absent, on the source side as
 // well as here. They are taken from the signed checkpoints inside each

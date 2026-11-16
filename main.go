@@ -4,7 +4,7 @@
 // It exists so an auditor never has to take Mesedi's word for anything.
 // Given an export file, it recomputes every hash from the export's own
 // contents, then resolves each checkpoint against a public transparency
-// log that neither Mesedi nor Verdifax controls. Mesedi is not contacted
+// log Mesedi does not control. Mesedi is not contacted
 // and no Mesedi credential is used.
 //
 // USAGE
@@ -180,6 +180,12 @@ type report struct {
 	// to be wrong in.
 	LogGrowthFailed bool `json:"log_growth_failed,omitempty"`
 
+	// Bitcoin is each checkpoint's OpenTimestamps result, and
+	// BitcoinSummary what they established together. A false receipt
+	// fails the report; a pending or unchecked one does not.
+	Bitcoin        []timestampCheck `json:"bitcoin_timestamps,omitempty"`
+	BitcoinSummary string           `json:"bitcoin_summary,omitempty"`
+
 	OK bool `json:"ok"`
 }
 
@@ -192,7 +198,13 @@ func main() {
 		pdfPath  = flag.String("pdf", "",
 			"also write a PDF report to this path (for a reader who will not run a CLI)")
 		showVersion = flag.Bool("version", false, "print version and exit")
+		trustedKeys keyPaths
+		bitcoinAPI  = flag.String("bitcoin-api", DefaultBitcoinAPI,
+			"Esplora-compatible block explorer used to read Bitcoin block Merkle roots")
 	)
+	flag.Var(&trustedKeys, "trusted-key",
+		"a PEM public key whose anchors to trust, besides Mesedi's published keys "+
+			"(for a self-hosted deployment's own key); may be repeated")
 	flag.Parse()
 
 	version := resolveVersion()
@@ -250,6 +262,15 @@ func main() {
 		// say precisely what was established.
 		rep.LogEntries = resolveLogEntries(export, *rekorURL, *offline)
 
+		// Who signed each entry (the outside review of 2026-11-15). Before the verdict below, so
+		// a direct anchor signed by the wrong key fails the report.
+		trusted, err := loadTrustedKeys(trustedKeys)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mesedi-verify:", err)
+			os.Exit(2)
+		}
+		checkSigners(export, rep.LogEntries, trusted)
+
 		// A failed entry is a finding. An unverifiable one is not, but
 		// it still means this report does not establish what it set out
 		// to, so neither may leave rep.OK true. Exit 0 on a chain nobody
@@ -300,6 +321,11 @@ func main() {
 		rep.LogSummary = logConfirmation(rep.LogEntries)
 		lateNote, timeCaveat := publicationTimingNotes(rep.LogEntries, *offline)
 		rep.LogSummary += lateNote
+		signedBy, signerCaveat := signerNotes(rep.LogEntries)
+		rep.LogSummary += signedBy
+		if signerCaveat != "" {
+			rep.Structural.Unverified = append(rep.Structural.Unverified, signerCaveat)
+		}
 		if timeCaveat != "" {
 			rep.Structural.Unverified = append(rep.Structural.Unverified, timeCaveat)
 		}
@@ -327,6 +353,21 @@ func main() {
 		// one does not, and lands in the caveats instead.
 		growth := checkLogGrowth(export.Intervals)
 		rep.LogGrowth = growthSummary(growth)
+
+		// The second anchor. Offline, no block explorer is asked.
+		var src blockSource
+		if !*offline {
+			src = newEsplora(*bitcoinAPI)
+		}
+		rep.Bitcoin = checkTimestamps(context.Background(), export, src)
+		btcEstablished, btcCaveat, btcFailed := timestampNotes(rep.Bitcoin, *offline)
+		rep.BitcoinSummary = strings.TrimSpace(btcEstablished)
+		if btcCaveat != "" {
+			rep.Structural.Unverified = append(rep.Structural.Unverified, btcCaveat)
+		}
+		if btcFailed {
+			rep.OK = false
+		}
 
 		// The caveat above says the log's history was not checked. Once
 		// every step IS checked that sentence becomes false, and a false
@@ -735,68 +776,6 @@ func resolveOne(
 	return check
 }
 
-// addTimeFromLog asks the log when it recorded an entry a stored proof
-// has already verified. The proof stays the verdict: if the log cannot be
-// asked, or its answer does not match the proof, the check stays
-// verified and says that its time was not checked.
-func addTimeFromLog(
-	ctx context.Context, client *rekorClient, iv attest.ExportedInterval, check *LogEntryCheck,
-) {
-	recorded, integrated, err := client.lookup(ctx, iv.LogEntryID)
-	if err != nil {
-		check.Detail += ". When it was published was not checked, because asking the log " +
-			"for its time failed: " + err.Error()
-		return
-	}
-	sum := sha256.Sum256([]byte(iv.LeafPreimage))
-	if !strings.EqualFold(recorded, hex.EncodeToString(sum[:])) {
-		check.Detail += ". When it was published was not checked, because the log's " +
-			"answer for this position does not match the signed proof, so its time was " +
-			"not used. The proof, which the log signed, is the stronger evidence"
-		return
-	}
-	check.Integrated = integrated
-	applyPublicationTime(check, integrated, iv)
-}
-
-// applyPublicationTime compares when the log recorded an entry with the
-// hour its checkpoint covers. WHEN, not only WHERE: until 2026-11-16 the
-// log's time was fetched and never compared, so a history made up and
-// anchored today verified clean (outside review finding E5).
-func applyPublicationTime(check *LogEntryCheck, integrated time.Time, iv attest.ExportedInterval) {
-	if integrated.IsZero() {
-		check.Detail += ". The log gave no time for the entry, so when it was " +
-			"published was not checked"
-		return
-	}
-	check.TimeChecked = true
-	if integrated.Before(iv.Checkpoint.IntervalStart) {
-		check.Status = StatusFailed
-		check.Detail = fmt.Sprintf("the log recorded this entry at %s, before the hour it "+
-			"covers began (%s). No honest chain can publish an hour before it happens",
-			integrated.Format(time.RFC3339), iv.Checkpoint.IntervalStart.UTC().Format(time.RFC3339))
-		return
-	}
-	if late := integrated.Sub(iv.Checkpoint.IntervalEnd); late > lateAnchorTolerance {
-		check.LateBy = late
-		check.Detail += fmt.Sprintf(", but published %s after this hour ended. A late "+
-			"anchor proves the record existed when it was published, not when its hour "+
-			"ended", humanDuration(late))
-	}
-}
-
-// humanDuration renders a delay in whole hours or days for a reader.
-func humanDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	if hours < 48 {
-		if hours == 1 {
-			return "1 hour"
-		}
-		return fmt.Sprintf("%d hours", hours)
-	}
-	return fmt.Sprintf("%d days", hours/24)
-}
-
 func printReport(w io.Writer, rep report) {
 	fmt.Fprintf(w, "Mesedi chain verification\n")
 	fmt.Fprintf(w, "  project        %s\n", rep.ProjectID)
@@ -834,6 +813,17 @@ func printReport(w io.Writer, rep report) {
 		}
 		if rep.LogGrowth != "" {
 			fmt.Fprintf(w, "\n  %s\n", wrap(rep.LogGrowth, 76, "  "))
+		}
+	}
+
+	if len(rep.Bitcoin) > 0 {
+		fmt.Fprintln(w, "\nBITCOIN TIMESTAMPS")
+		for _, c := range rep.Bitcoin {
+			fmt.Fprintf(w, "  %s %-34s %s\n", statusMark(c.Status), fmt.Sprintf("checkpoint %d", c.Seq),
+				wrap(c.Detail, 74, strings.Repeat(" ", 42)))
+		}
+		if rep.BitcoinSummary != "" {
+			fmt.Fprintf(w, "\n  %s\n", wrap(rep.BitcoinSummary, 76, "  "))
 		}
 	}
 
@@ -890,6 +880,10 @@ func statusMark(status string) string {
 		return "[ ok ]"
 	case StatusUnverifiable:
 		return "[ ?? ]"
+	case "pending":
+		return "[wait]"
+	case "none":
+		return "[ -- ]"
 	default:
 		return "[FAIL]"
 	}
@@ -936,37 +930,4 @@ func wrap(s string, width int, indent string) string {
 		line += len(word)
 	}
 	return b.String()
-}
-
-// publicationTimingNotes returns the sentence added to the log summary when
-// any checkpoint was published late, and the caveat for checkpoints that
-// were verified offline, where no publication time is available (added
-// 2026-11-16, outside review finding E5).
-func publicationTimingNotes(entries []LogEntryCheck, offline bool) (lateNote, timeCaveat string) {
-	var late, unchecked []uint64
-	for _, e := range entries {
-		if e.LateBy > 0 {
-			late = append(late, e.Seq)
-		}
-		if e.verified() && !e.TimeChecked {
-			unchecked = append(unchecked, e.Seq)
-		}
-	}
-	if len(late) > 0 {
-		lateNote = fmt.Sprintf(" Checkpoints %v were published more than %s after "+
-			"their hour ended; each says how late above. A late anchor proves the record "+
-			"existed when it was published, not when its hour ended.",
-			late, humanDuration(lateAnchorTolerance))
-	}
-	switch {
-	case len(unchecked) == 0:
-	case offline:
-		timeCaveat = "When each checkpoint was published was NOT checked for the ones " +
-			"verified offline: an inclusion proof carries no time. Run again without " +
-			"--offline to compare each hour with when the log recorded it."
-	default:
-		timeCaveat = fmt.Sprintf("When checkpoints %v were published was NOT checked; "+
-			"each line above says why.", unchecked)
-	}
-	return lateNote, timeCaveat
 }

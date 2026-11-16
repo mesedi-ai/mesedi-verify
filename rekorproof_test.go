@@ -251,17 +251,13 @@ func TestRecomputeRootRFC6962_OutOfRangeIndex(t *testing.T) {
 	}
 }
 
-// TestVerifyAnchor_RejectsEmptyPubkey confirms that the top-level
-// VerifyAnchor surfaces a clear, descriptive error when the
-// embedded Rekor public key is unpopulated. This is the safety
-// guarantee that prevents accidental "verified" results from a
-// build with an empty key file.
-func TestVerifyAnchor_RejectsEmptyPubkey(t *testing.T) {
-	// The current rekor_pubkey.go has RekorPublicKeyPEM = "".
-	// VerifyAnchor's first calls don't need the pubkey (they validate
-	// input + recompute Merkle root from in-memory data), but the
-	// signed-checkpoint check does. We construct a structurally-valid
-	// AnchorInput so the failure is specifically the empty-pubkey one.
+func TestVerifyAnchor_RejectsACheckpointNotSignedByTheEmbeddedKey(t *testing.T) {
+	// A structurally valid input whose Merkle root recomputes correctly,
+	// but whose signed checkpoint carries no valid signature from the
+	// Rekor key embedded in rekorproof_pubkey.go. The signature check is
+	// the only thing that can refuse it. (Until 2026-11-16 this test was
+	// named for an empty key, which has not been the case since the key
+	// was embedded; outside review finding E26.)
 	leaves := [][]byte{[]byte("a"), []byte("b")}
 	leafHashes, root := buildRFC6962Tree(leaves)
 	path := inclusionProof(leafHashes, 0)
@@ -278,7 +274,7 @@ func TestVerifyAnchor_RejectsEmptyPubkey(t *testing.T) {
 
 	err := VerifyAnchor(in)
 	if err == nil {
-		t.Fatal("expected an error from VerifyAnchor when RekorPublicKeyPEM is empty, got nil")
+		t.Fatal("a checkpoint not signed by the embedded Rekor key verified")
 	}
 }
 

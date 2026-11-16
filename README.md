@@ -25,8 +25,26 @@ out the version the report states before building.
     cat export.json | mesedi-verify         verify from stdin
     mesedi-verify --json export.json        machine-readable
     mesedi-verify --pdf out.pdf export.json also write a PDF report
-    mesedi-verify --offline export.json     no network; the stronger check
+    mesedi-verify --offline export.json     no network; checks the stored proofs
+                                            against Sigstore's key, but not WHEN
+                                            each hour was published
     mesedi-verify --rekor <url> export.json
+
+## What a run checks
+
+- Every hash in the export, recomputed from the export's own contents.
+- That each checkpoint is in the public log, and **when** the log
+  recorded it. A checkpoint published more than 2 hours after its hour
+  ended still verifies, but the report says how late: a late anchor
+  proves the record existed when it was published, not when its hour
+  ended. Offline runs cannot check this; the report says so.
+- A log that cannot be reached, or answers with a server error, makes a
+  checkpoint UNVERIFIABLE, never FAILED: the record is not known to be
+  wrong, it just could not be checked.
+- Exports in format v2 (Mesedi from 16 November 2026) may mark agent
+  runs whose records were deleted under retention, and hours recorded
+  before Mesedi stored each run's fingerprint. Both are reported as
+  limits of what can be checked, not as failures.
 
 ## Exit codes
 

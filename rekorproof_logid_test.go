@@ -62,7 +62,7 @@ func TestEmbeddedKeyIsTheProductionRekorKey(t *testing.T) {
 }
 
 // A malformed or absent key must fail loudly rather than silently
-// disabling verification. rekor_pubkey.go's own documentation promises
+// disabling verification. rekorproof_pubkey.go's own documentation promises
 // "a clear 'populate this file' error rather than silently accepting
 // any key", and that promise is only worth something if it is tested.
 func TestEmbeddedLogIDIsDerivedNotHardcoded(t *testing.T) {

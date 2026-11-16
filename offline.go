@@ -125,6 +125,15 @@ func verifyAnchorOffline(iv attest.ExportedInterval) offlineResult {
 			shorten(env.LogID), shorten(embedded))}
 	}
 
+	// A proof that names no log cannot be checked against a key. Until
+	// 2026-11-16 it reached VerifyAnchor and was decided FAILED by input
+	// validation; it is a note, and the online path may still check it
+	// (outside review finding E23).
+	if env.LogID == "" {
+		return offlineResult{Note: "the anchor proof names no log, so it could not be " +
+			"checked offline"}
+	}
+
 	var proof wireInclusionProof
 	if err := json.Unmarshal(env.InclusionProof, &proof); err != nil {
 		return offlineResult{Note: "the anchor proof's inclusion proof could not be " +
@@ -221,6 +230,18 @@ func bindEntryToLeaf(entryBodyB64, leafPreimage string) (offlineResult, bool) {
 			Detail: fmt.Sprintf("the log entry this proof points to describes %s, but "+
 				"this checkpoint is %s. The proof is about a different record",
 				shorten(recorded), shorten(computed)),
+		}, false
+	}
+	// The online path refuses anything but a hashedrekord; until 2026-11-16
+	// the offline path did not check (outside review finding E23). Checked
+	// after the hash binds, so a malformed proof still falls through to
+	// the online check rather than accusing the record.
+	if body.Kind != "hashedrekord" {
+		return offlineResult{
+			Decided: true,
+			Status:  StatusFailed,
+			Detail: fmt.Sprintf("the log entry this proof points to records this checkpoint, "+
+				"but as a %q, not a hashedrekord, so it is not the entry the chain publishes", body.Kind),
 		}, false
 	}
 	return offlineResult{}, true

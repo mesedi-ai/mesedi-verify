@@ -24,26 +24,18 @@ import (
 // WHAT IS CHECKED: that the entry at the claimed log index is a
 // hashedrekord whose recorded sha256 is the checkpoint's hash.
 //
-// WHAT IS NOT: the log's signed tree head. Be precise about what that
-// leaves open, because the obvious reading is wrong. Verifying the tree
-// head would guard against SIGSTORE being dishonest. It is not what
-// protects anyone from MESEDI, for a hash to be found here at all, Mesedi
-// must genuinely have published it to an append-only log it does not
-// control, which is the property being sold. Interception is already
-// covered by TLS. So the residual is the trust assumption this design
-// states openly: independence comes from the log, and if the log lies the
-// guarantee is gone.
+// Since 2026-11-16, also WHEN: the log's recorded time is compared with
+// the hour the checkpoint covers, and a late anchor is named.
 //
-// Doing it properly needs Rekor's public key obtained trustworthily, which
-// means Sigstore's TUF root, a heavy dependency in a binary whose value
-// depends on an auditor being able to read it in one sitting. Rigour in
-// the verifier bought by making the verifier unverifiable is a bad trade.
-//
-// The more valuable adjacent work is durability rather than cryptography:
-// capturing Rekor's inclusion proof and signed entry timestamp AT ANCHOR
-// TIME so the evidence still verifies when Rekor is unreachable or that
-// log instance has been retired. Verdifax's /attest already returns the
-// inclusion proof and Mesedi currently discards it. See the tasks.
+// This lookup does not check the log's signed tree head. The offline path
+// does (offline.go and rekorproof.go): the inclusion proof stored with each
+// checkpoint at anchor time is checked against Rekor's public key embedded
+// in rekorproof_pubkey.go, so a checkpoint still verifies when the log is
+// unreachable or retired. Neither path yet checks WHO signed the entry;
+// that comes with Mesedi's own anchoring key. (This comment said the tree
+// head was never checked and that proofs were discarded at anchor time;
+// both stopped being true when the offline path shipped, outside review
+// finding E26.)
 
 // DefaultRekorURL is Sigstore's public good instance, free, with a 99.5%
 // availability SLO, and operated by neither party to this transaction,
@@ -82,6 +74,17 @@ type LogEntryCheck struct {
 	// Integrated is when the log says it incorporated the entry. Zero
 	// unless the entry was actually retrieved.
 	Integrated time.Time
+
+	// LateBy is how long after its hour ended the log recorded the entry,
+	// when that exceeds lateAnchorTolerance. Zero when on time or when no
+	// time was available.
+	LateBy time.Duration
+
+	// TimeChecked is true when the log's recorded time was compared with
+	// the hour the checkpoint covers. A stored inclusion proof carries no
+	// time, so an offline run never sets it, and an online run sets it
+	// only when the log answered with a time.
+	TimeChecked bool
 
 	// Method names which check produced Status. Empty when the entry was
 	// settled before either ran, a mock ledger, say, or a missing
@@ -181,7 +184,7 @@ func (c *rekorClient) lookup(ctx context.Context, logIndex string) (string, time
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("could not reach the transparency log: %w", err)
+		return "", time.Time{}, logUnreachable{fmt.Errorf("could not reach the transparency log: %w", err)}
 	}
 	defer resp.Body.Close()
 
@@ -196,8 +199,8 @@ func (c *rekorClient) lookup(ctx context.Context, logIndex string) (string, time
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", time.Time{}, fmt.Errorf("transparency log returned %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", time.Time{}, logUnreachable{fmt.Errorf("transparency log returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
 
 	// 4 MiB is far more than an entry needs and bounds a hostile or broken
@@ -254,3 +257,21 @@ func (c *rekorClient) lookup(ctx context.Context, logIndex string) (string, time
 	}
 	return strings.ToLower(decoded.Spec.Data.Hash.Value), integrated, nil
 }
+
+// logUnreachable marks a lookup that could not get an answer from the log:
+// a network error, a timeout, or any response other than 200 or 404. The
+// record may be fine; the log could not be asked. Reported UNVERIFIABLE.
+// Until 2026-11-16 these were reported FAILED, the word reserved for "the
+// log disagrees with the export", contradicting the three-outcome rule
+// above (outside review finding E6). A 404 stays a failure: it means the
+// log answered and has no such entry.
+type logUnreachable struct{ err error }
+
+func (u logUnreachable) Error() string { return u.err.Error() }
+func (u logUnreachable) Unwrap() error { return u.err }
+
+// lateAnchorTolerance is how long after its hour ends a checkpoint may be
+// published and still count as on time. The scheduler publishes within
+// minutes; anything later is catch-up after downtime, or backdating, and
+// the report names it (Robert's decision, 2026-11-16; finding E5).
+const lateAnchorTolerance = 2 * time.Hour

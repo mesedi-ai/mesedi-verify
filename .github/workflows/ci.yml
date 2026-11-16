@@ -47,3 +47,9 @@ jobs:
           fi
       - name: go test
         run: go test ./...
+      # Added 2026-11-16. go.mod pinned Go 1.27.1, whose net/http and
+      # crypto/tls had known vulnerabilities this verifier reaches (it calls
+      # the transparency log over HTTPS), and nothing would have said so.
+      # govulncheck fails only on vulnerabilities the code actually calls.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

@@ -42,7 +42,7 @@
 //
 // The verification is sound if and only if:
 //
-//   - The embedded Rekor public key in rekor_pubkey.go matches the
+//   - The embedded Rekor public key in rekorproof_pubkey.go matches the
 //     real Rekor instance's signing key. Operators must update this
 //     key when Rekor rotates (Sigstore rotates its keys infrequently
 //     and announces in advance via the TUF root).
@@ -234,11 +234,12 @@ func VerifyAnchor(in AnchorInput) error {
 //	leaf hash:   hash[i]   = SHA256(0x00 || data[i])
 //	internal:    hash[a,b] = SHA256(0x01 || hash[a] || hash[b])
 //
-// The leaf hash is provided ALREADY DOMAIN-PREFIXED by Rekor (the
-// "data.hash.value" in a hashedrekord entry IS the leaf hash for
-// inclusion-proof purposes, Rekor handles the 0x00 prefix at submit
-// time). So this function only applies the 0x01 internal-node prefix
-// when combining siblings.
+// leafHash is the RFC 6962 leaf hash the caller computed,
+// SHA-256(0x00 || canonical entry body), not the data.hash.value the
+// entry references (see step 2 of VerifyAnchor). This function only
+// applies the 0x01 internal-node prefix when combining siblings. (This
+// comment used to say data.hash.value IS the leaf hash, contradicting
+// VerifyAnchor; corrected 2026-11-16, outside review finding E26.)
 func recomputeRootRFC6962(leafHash []byte, logIndex, treeSize int64, siblings [][]byte) ([]byte, error) {
 	if logIndex < 0 || logIndex >= treeSize {
 		return nil, fmt.Errorf("log_index %d out of range for tree_size %d", logIndex, treeSize)
@@ -368,12 +369,6 @@ func splitCheckpoint(checkpoint string) (body string, signatures []string, err e
 	body = checkpoint[:idx+1]
 	tail := checkpoint[idx+2:]
 
-	// Each signature line starts with U+2014 EM DASH then a space, per
-	// c2sp.org/signed-note. The em-dash literal here is load-bearing
-	// and must NOT be replaced by any em-dash sanitizer pass; an
-	// earlier pass did exactly that and broke every Rekor checkpoint
-	// verification.
-	const sigLinePrefix = "— "
 	for _, line := range strings.Split(strings.TrimRight(tail, "\n"), "\n") {
 		if line == "" {
 			continue
@@ -424,6 +419,14 @@ func validateCheckpointBody(body, expectedRootHashHex string, expectedTreeSize i
 	return nil
 }
 
+// sigLinePrefix starts every signature line: U+2014 EM DASH then a space,
+// per c2sp.org/signed-note. The em-dash literal is load-bearing and must
+// NOT be replaced by any em-dash sanitizer pass; an earlier pass did
+// exactly that and broke every Rekor checkpoint verification. One
+// declaration since 2026-11-16: a second copy in this file was not
+// covered by the guard test (outside review finding E25).
+const sigLinePrefix = "— "
+
 // decodeCheckpointSignatureLine parses one c2sp note signature line.
 // Line format: ",  <key_name> <base64-signature-with-key-hint-prefix>\n"
 //
@@ -432,14 +435,10 @@ func validateCheckpointBody(body, expectedRootHashHex string, expectedTreeSize i
 // key hint matches keyHint (returns nil error and signature bytes), or
 // returns an error when the line doesn't match the expected key.
 func decodeCheckpointSignatureLine(line string, keyHint []byte) ([]byte, error) {
-	// Strip the U+2014 EM DASH + space prefix. The em-dash literal
-	// here is load-bearing for c2sp.org/signed-note parsing and must
-	// NOT be replaced by any em-dash sanitizer pass.
-	const prefix = "— "
-	if !strings.HasPrefix(line, prefix) {
+	if !strings.HasPrefix(line, sigLinePrefix) {
 		return nil, errors.New("missing em-dash prefix")
 	}
-	rest := line[len(prefix):]
+	rest := line[len(sigLinePrefix):]
 
 	// Split off key name (up to first space) and base64 blob.
 	spaceIdx := strings.IndexByte(rest, ' ')
@@ -488,7 +487,7 @@ func computeRekorLogID(pubKey *ecdsa.PublicKey) (string, error) {
 // embeds into every assembled audit bundle so the verifier can
 // confirm the bundle's Rekor entries were issued by the same log
 // the verifier trusts. Returns an error if the embedded pubkey has
-// not been populated (see rekor_pubkey.go).
+// not been populated (see rekorproof_pubkey.go).
 func EmbeddedLogID() (string, error) {
 	pubKey, err := loadRekorPublicKey()
 	if err != nil {
@@ -502,13 +501,13 @@ func EmbeddedLogID() (string, error) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // loadRekorPublicKey decodes the embedded Rekor production public key
-// (see rekor_pubkey.go) into an *ecdsa.PublicKey ready for signature
+// (see rekorproof_pubkey.go) into an *ecdsa.PublicKey ready for signature
 // verification. Returns an error if the embedded key is empty or
 // cannot be parsed, both of which indicate the operator forgot to
-// populate rekor_pubkey.go before building.
+// populate rekorproof_pubkey.go before building.
 func loadRekorPublicKey() (*ecdsa.PublicKey, error) {
 	if strings.TrimSpace(RekorPublicKeyPEM) == "" {
-		return nil, errors.New("RekorPublicKeyPEM is empty, populate cmd/.../rekor_pubkey.go with the current Rekor production key (see comment in that file)")
+		return nil, errors.New("RekorPublicKeyPEM is empty, populate rekorproof_pubkey.go with the current Rekor production key (see comment in that file)")
 	}
 	block, _ := pem.Decode([]byte(RekorPublicKeyPEM))
 	if block == nil {

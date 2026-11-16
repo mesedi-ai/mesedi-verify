@@ -145,3 +145,25 @@ func TestTheCheckpointSignaturePrefixIsLeftAlone(t *testing.T) {
 			decl)
 	}
 }
+
+// The prefix is declared exactly once, and no other em-dash literal sits
+// in rekorproof.go's code. A second copy (decodeCheckpointSignatureLine's
+// own "prefix") went unguarded until 2026-11-16 (outside review finding
+// E25); now it uses sigLinePrefix, and a new copy fails here.
+func TestOnlyOneEmDashLiteralInRekorproof(t *testing.T) {
+	src, err := os.ReadFile("rekorproof.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	literals := 0
+	for _, line := range strings.Split(string(src), "\n") {
+		code := line
+		if i := strings.Index(code, "//"); i >= 0 {
+			code = code[:i]
+		}
+		literals += strings.Count(code, emDash)
+	}
+	if literals != 1 {
+		t.Fatalf("rekorproof.go has %d em-dash literals in code, want exactly 1 (sigLinePrefix)", literals)
+	}
+}

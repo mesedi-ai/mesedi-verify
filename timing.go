@@ -56,24 +56,63 @@ func applyPublicationTime(check *LogEntryCheck, integrated time.Time, iv attest.
 			integrated.Format(time.RFC3339), iv.Checkpoint.IntervalStart.UTC().Format(time.RFC3339))
 		return
 	}
-	if late := integrated.Sub(iv.Checkpoint.IntervalEnd); late > lateAnchorTolerance {
-		check.LateBy = late
+	// Every hour's delay is shown, not only the late ones: a delay under
+	// the "late" point used to be silent, which hid an hour published 1
+	// hour 41 minutes after it ended (the outside review's round 2,
+	// 17 November 2026; owner decision the same day).
+	after := integrated.Sub(iv.Checkpoint.IntervalEnd)
+	if after < 0 {
+		after = 0
+	}
+	check.PublishedAfter = after
+	if after > lateAfter {
+		check.LateBy = after
 		check.Detail += fmt.Sprintf(", but published %s after this hour ended. A late "+
 			"anchor proves the record existed when it was published, not when its hour "+
-			"ended", humanDuration(late))
+			"ended", humanDuration(after))
+	} else {
+		check.Detail += fmt.Sprintf(", published %s after this hour ended", humanDuration(after))
+	}
+	if maxLate > 0 && after > maxLate {
+		check.TooLate = true
+		check.Detail += fmt.Sprintf(". That is more than %s, the most this run was told to "+
+			"accept (--max-late)", humanDuration(maxLate))
 	}
 }
 
-// humanDuration renders a delay in whole hours or days for a reader.
+// When an hour counts as late, and the most lateness a run accepts. Both
+// are the auditor's policy, set with --late-after and --max-late (owner
+// decision, 17 November 2026). The defaults keep what the report did
+// before: late after 2 hours, and no maximum, because a caught-up hour
+// after an outage is published late by design, and it is honestly what
+// it says it is.
+var (
+	lateAfter = lateAnchorTolerance
+	maxLate   time.Duration // zero: no maximum
+)
+
+// humanDuration renders a delay for a reader: minutes under an hour,
+// hours and minutes under two days, whole days after that.
 func humanDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	if hours < 48 {
-		if hours == 1 {
-			return "1 hour"
+	unit := func(n int, one string) string {
+		if n == 1 {
+			return "1 " + one
 		}
-		return fmt.Sprintf("%d hours", hours)
+		return fmt.Sprintf("%d %ss", n, one)
 	}
-	return fmt.Sprintf("%d days", hours/24)
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return unit(int(d.Minutes()), "minute")
+	case d < 48*time.Hour:
+		out := unit(int(d.Hours()), "hour")
+		if m := int(d.Minutes()) % 60; m > 0 {
+			out += " " + unit(m, "minute")
+		}
+		return out
+	}
+	return unit(int(d.Hours())/24, "day")
 }
 
 // publicationTimingNotes returns the sentence added to the log summary when
@@ -94,7 +133,7 @@ func publicationTimingNotes(entries []LogEntryCheck, offline bool) (lateNote, ti
 		lateNote = fmt.Sprintf(" Checkpoints %v were published more than %s after "+
 			"their hour ended; each says how late above. A late anchor proves the record "+
 			"existed when it was published, not when its hour ended.",
-			late, humanDuration(lateAnchorTolerance))
+			late, humanDuration(lateAfter))
 	}
 	switch {
 	case len(unchecked) == 0:

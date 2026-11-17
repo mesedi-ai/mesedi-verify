@@ -37,21 +37,39 @@ out the version the report states before building.
                                             the block explorer used to read
                                             Bitcoin blocks (default
                                             https://blockstream.info/api)
+    mesedi-verify --late-after 30m export.json
+                                            call an hour late once it was
+                                            published more than this after it
+                                            ended (default 2h)
+    mesedi-verify --max-late 24h export.json
+                                            an hour published more than this
+                                            after it ended makes the run
+                                            INCOMPLETE (default: no maximum)
+    mesedi-verify --require-signer-all export.json
+                                            require a trusted signature on
+                                            every hour, including hours
+                                            published before 16 November 2026
 
 ## What a run checks
 
 - Every hash in the export, recomputed from the export's own contents.
 - That each checkpoint is in the public log, and **when** the log
-  recorded it. A checkpoint published more than 2 hours after its hour
-  ended still verifies, but the report says how late: a late anchor
-  proves the record existed when it was published, not when its hour
-  ended. Offline runs cannot check this; the report says so.
+  recorded it. Every hour's delay is shown. One published more than 2
+  hours after its hour ended (`--late-after`) is called late, and the
+  result line names it: a late anchor proves the record existed when it
+  was published, not when its hour ended. An auditor can set a maximum
+  with `--max-late`; hours beyond it make the run INCOMPLETE. Offline
+  runs cannot check timing; the report says so.
 - **Who signed** each log entry. Since 16 November 2026 Mesedi signs
   every anchor with its own key. The entry must name one of Mesedi's
   published keys (or one passed with `--trusted-key`), its signature
   must verify, and the anchored text must be exactly this hour's.
   Hours anchored before then went through a third-party service; the
-  report says their signer is not checked.
+  report says their signer is not checked. Which hours count as
+  "before" is decided from Sigstore's own signed data (the hour's
+  position in the log), never from the export, so an export cannot
+  switch the check off. `--require-signer-all` requires a trusted
+  signature on every hour.
 - **Bitcoin timestamps.** Each hour since 16 November 2026 is also
   timestamped in Bitcoin through OpenTimestamps, independently of
   Sigstore. A complete receipt must lead to its block's real Merkle
@@ -61,6 +79,13 @@ out the version the report states before building.
 - A log that cannot be reached, or answers with a server error, makes a
   checkpoint UNVERIFIABLE, never FAILED: the record is not known to be
   wrong, it just could not be checked.
+- Agent runs that received events after their hour was anchored are
+  named: those events are kept, but the anchor does not cover them.
+- **One verdict.** The exit code, the JSON (`verdict` and `ok`), the
+  text RESULT line and the PDF all read the same result: FAILED if any
+  check failed (the record, a checkpoint, the log's growth or a Bitcoin
+  receipt), INCOMPLETE if something could not be established, and
+  VERIFIED only otherwise.
 - Exports in format v2 (Mesedi from 16 November 2026) may mark agent
   runs whose records were deleted under retention, and hours recorded
   before Mesedi stored each run's fingerprint. Both are reported as

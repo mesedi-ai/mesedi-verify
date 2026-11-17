@@ -140,6 +140,13 @@ func checkIntervalTimestamps(ctx context.Context, iv attest.ExportedInterval, sr
 			c.Status, c.Detail = StatusFailed, fmt.Sprintf("the receipt from %s does not read: %v", r.Calendar, err)
 			return c
 		}
+		// A Bitcoin attestation that does not read is a false receipt, not
+		// a pending one (the outside review's round 2, 17 November 2026).
+		if ts.InvalidBitcoinAttestations() > 0 {
+			c.Status, c.Detail = StatusFailed, fmt.Sprintf("the receipt from %s carries a "+
+				"Bitcoin attestation that does not read as a block", r.Calendar)
+			return c
+		}
 		claims := ts.BitcoinClaims()
 		if len(claims) == 0 {
 			pending = append(pending, r.Calendar)

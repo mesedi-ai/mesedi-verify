@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mesedi-ai/mesedi/backend/attest"
@@ -38,9 +40,9 @@ import (
 //
 // The two ROOT hashes are deliberately absent, on the source side as
 // well as here. They are taken from the signed checkpoints inside each
-// interval's inclusion proof, whose signatures this program has already
-// verified against Sigstore's public key. A root supplied alongside the
-// proof would be a number checked against itself.
+// interval's inclusion proof, whose signatures treeHeadOf checks against
+// Sigstore's public key. A root supplied alongside the proof would be a
+// number checked against itself.
 type consistencyProofWire struct {
 	FirstSize int64
 	LastSize  int64
@@ -56,15 +58,15 @@ type anchorProofWithConsistency struct {
 	ConsistencyProof json.RawMessage `json:"consistency_proof"`
 }
 
-// treeHeadOf pulls the size and root the log signed for one interval,
-// out of the checkpoint rather than out of the proof's own RootHash
-// field.
+// treeHeadOf returns the size and root Sigstore signed for one interval,
+// read from the signed checkpoint text (its second and third lines) after
+// checking that checkpoint's signature against Sigstore's key here.
 //
-// Those two should agree, and verifyAnchorOffline has already required
-// that they do for this interval. Reading the checkpoint again here is
-// not redundancy for its own sake: the checkpoint is the part Sigstore
-// signed, and this function is the one place where a wrong root would
-// turn a failed consistency check into a false accusation of tampering.
+// Until 17 November 2026 it read the proof's own TreeSize and RootHash
+// fields, which nobody signed, while its comment said the checkpoint.
+// They agreed only because the inclusion check had compared them earlier
+// in the same run, and the growth check must not depend on another check
+// having run first (the outside review's round 2).
 func treeHeadOf(iv attest.ExportedInterval) (size int64, root []byte, ok bool) {
 	if len(iv.AnchorProof) == 0 {
 		return 0, nil, false
@@ -74,17 +76,27 @@ func treeHeadOf(iv attest.ExportedInterval) (size int64, root []byte, ok bool) {
 		return 0, nil, false
 	}
 	var proof wireInclusionProof
-	if json.Unmarshal(env.InclusionProof, &proof) != nil {
+	if json.Unmarshal(env.InclusionProof, &proof) != nil || proof.Checkpoint == "" {
 		return 0, nil, false
 	}
-	if proof.TreeSize <= 0 || proof.RootHash == "" {
+	text, _, found := strings.Cut(proof.Checkpoint, "\n\n")
+	lines := strings.Split(text, "\n")
+	if !found || len(lines) < 3 {
 		return 0, nil, false
 	}
-	b, err := hex.DecodeString(proof.RootHash)
-	if err != nil || len(b) != sha256.Size {
+	size, err := strconv.ParseInt(lines[1], 10, 64)
+	if err != nil || size <= 0 {
 		return 0, nil, false
 	}
-	return proof.TreeSize, b, true
+	root, err = base64.StdEncoding.DecodeString(lines[2])
+	if err != nil || len(root) != sha256.Size {
+		return 0, nil, false
+	}
+	key, err := loadRekorPublicKey()
+	if err != nil || verifySignedCheckpoint(proof.Checkpoint, hex.EncodeToString(root), size, key) != nil {
+		return 0, nil, false
+	}
+	return size, root, true
 }
 
 // consistencyProofOf returns the stored proof for one interval, if any.

@@ -186,7 +186,12 @@ type report struct {
 	Bitcoin        []timestampCheck `json:"bitcoin_timestamps,omitempty"`
 	BitcoinSummary string           `json:"bitcoin_summary,omitempty"`
 
-	OK bool `json:"ok"`
+	// Verdict is the run's single result, VERIFIED, INCOMPLETE or FAILED,
+	// read by every output (verdict.go); VerdictReasons says why when it
+	// is not VERIFIED. OK is true exactly when Verdict is VERIFIED.
+	Verdict        string   `json:"verdict"`
+	VerdictReasons []string `json:"verdict_reasons,omitempty"`
+	OK             bool     `json:"ok"`
 }
 
 func main() {
@@ -201,11 +206,23 @@ func main() {
 		trustedKeys keyPaths
 		bitcoinAPI  = flag.String("bitcoin-api", DefaultBitcoinAPI,
 			"Esplora-compatible block explorer used to read Bitcoin block Merkle roots")
+		lateAfterFlag = flag.Duration("late-after", lateAnchorTolerance,
+			"an hour published more than this after it ended is reported as late")
+		requireAll = flag.Bool("require-signer-all", false,
+			"require a trusted signature on every hour, including hours published before 16 November 2026")
+		maxLateFlag = flag.Duration("max-late", 0,
+			"an hour published more than this after it ended makes the run INCOMPLETE (0: no maximum)")
 	)
 	flag.Var(&trustedKeys, "trusted-key",
 		"a PEM public key whose anchors to trust, besides Mesedi's published keys "+
 			"(for a self-hosted deployment's own key); may be repeated")
 	flag.Parse()
+
+	lateAfter, maxLate, requireSignerAll = *lateAfterFlag, *maxLateFlag, *requireAll
+	if lateAfter < 0 || maxLate < 0 {
+		fmt.Fprintln(os.Stderr, "mesedi-verify: --late-after and --max-late cannot be negative")
+		os.Exit(2)
+	}
 
 	version := resolveVersion()
 	if *showVersion {
@@ -225,175 +242,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	sum := sha256.Sum256(raw)
-
-	rep := report{
-		Format:       export.Format,
-		ProjectID:    export.ProjectID,
-		ExportSHA256: hex.EncodeToString(sum[:]),
-
-		GeneratedAt: export.GeneratedAt,
-		VerifiedAt:  time.Now().UTC(),
-		Verifier:    version,
-		Online:      !*offline,
-		Structural:  attest.VerifyChainExport(export),
-	}
-	rep.OK = rep.Structural.OK
-
-	// A limit on the REPORT rather than on the chain, and one the reader
-	// cannot discover for themselves. If the verifier's own source is not
-	// identifiable, "rebuild this and reproduce the result" is an
-	// instruction nobody can follow, and the report should say so instead
-	// of implying an auditability it does not have.
-	if !versionIsReproducible(version) {
-		rep.Structural.Unverified = append(rep.Structural.Unverified,
-			"This report was produced by a verifier build that cannot be tied to a "+
-				"published commit ("+version+"). The result above is therefore not "+
-				"independently reproducible. Use a released binary, or one built from a "+
-				"clean checkout, for anything that will be relied on.")
-	}
-
-	{
-		// Run for both modes. An offline run now checks every stored
-		// inclusion proof rather than skipping the anchors entirely, so
-		// the old "offline shows only internal consistency" branch would
-		// understate what happened, which is a falsehood in the safe
-		// direction, but still a falsehood in a report whose job is to
-		// say precisely what was established.
-		rep.LogEntries = resolveLogEntries(export, *rekorURL, *offline)
-
-		// Who signed each entry (the outside review of 2026-11-15). Before the verdict below, so
-		// a direct anchor signed by the wrong key fails the report.
-		trusted, err := loadTrustedKeys(trustedKeys)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "mesedi-verify:", err)
-			os.Exit(2)
-		}
-		checkSigners(export, rep.LogEntries, trusted)
-
-		// A failed entry is a finding. An unverifiable one is not, but
-		// it still means this report does not establish what it set out
-		// to, so neither may leave rep.OK true. Exit 0 on a chain nobody
-		// can check would be the single most misleading thing this tool
-		// could do.
-		var unverifiable []uint64
-		for _, e := range rep.LogEntries {
-			switch {
-			case e.failed():
-				rep.OK = false
-			case e.unverifiable():
-				unverifiable = append(unverifiable, e.Seq)
-				rep.OK = false
-			}
-		}
-		if len(unverifiable) > 0 {
-			// No cause is asserted here. This used to name one, "anchored
-			// before the leaf preimage was retained", which was the only
-			// cause that existed when it was written and is now one of
-			// several: a mock ledger, a missing preimage, or an offline run
-			// against a checkpoint that carries no inclusion proof. Printing
-			// a confident wrong reason next to a correct verdict is how a
-			// reader stops believing the correct parts, so the reasons stay
-			// where they are individually true, per checkpoint, above.
-			rep.Structural.Unverified = append(rep.Structural.Unverified, fmt.Sprintf(
-				"Checkpoints %v could NOT be checked. That is not a finding against "+
-					"the record. Nothing here says they are wrong, but nothing here "+
-					"says they are right either. The reason differs per checkpoint and "+
-					"is given against each one in the PUBLIC TRANSPARENCY LOG section.",
-				unverifiable))
-		}
-		// Replace the library's standing caveat, which is written for the
-		// offline case, with one that describes what THIS run actually
-		// did.
-		//
-		// The replacement must be driven by the counts, and it was not.
-		// An earlier version substituted "Each checkpoint hash was
-		// confirmed PRESENT in the public log" whenever the run was
-		// online, regardless of whether a single entry had been resolved
-		//, so a run in which nothing could be checked printed a claim of
-		// verification directly above a RESULT line saying the opposite.
-		// A false claim of verification inside the section whose entire
-		// job is to prevent overclaiming is the worst place in the report
-		// for one, and it survived because the substitution was written
-		// at a moment when every run happened to resolve everything.
-		// What was established goes to the results; what was not stays in
-		// the caveats. Same entries drive both, so they cannot disagree.
-		rep.LogSummary = logConfirmation(rep.LogEntries)
-		lateNote, timeCaveat := publicationTimingNotes(rep.LogEntries, *offline)
-		rep.LogSummary += lateNote
-		signedBy, signerCaveat := signerNotes(rep.LogEntries)
-		rep.LogSummary += signedBy
-		if signerCaveat != "" {
-			rep.Structural.Unverified = append(rep.Structural.Unverified, signerCaveat)
-		}
-		if timeCaveat != "" {
-			rep.Structural.Unverified = append(rep.Structural.Unverified, timeCaveat)
-		}
-		rep.Structural.Unverified = replacePrefix(
-			rep.Structural.Unverified,
-			"Transparency log entries were NOT resolved",
-			logResolutionCaveat(rep.LogEntries, *offline))
-
-		// An anchor proof that was present and unusable must not vanish.
-		// Reported separately from the verdict, because it describes what
-		// was OFFERED, and the verdict describes what was established.
-		for _, e := range rep.LogEntries {
-			if e.ProofNote != "" {
-				rep.Structural.Unverified = append(rep.Structural.Unverified,
-					fmt.Sprintf("Checkpoint %d: %s.", e.Seq, e.ProofNote))
-			}
-		}
-
-		// Did the log only grow, or is it a different log wearing the
-		// same name? Nothing above can tell, because every check above
-		// is satisfied by a rewritten tree.
-		//
-		// A broken growth proof FAILS the report: it is a positive
-		// finding about the log, not a gap in our evidence. An absent
-		// one does not, and lands in the caveats instead.
-		growth := checkLogGrowth(export.Intervals)
-		rep.LogGrowth = growthSummary(growth)
-
-		// The second anchor. Offline, no block explorer is asked.
-		var src blockSource
-		if !*offline {
-			src = newEsplora(*bitcoinAPI)
-		}
-		rep.Bitcoin = checkTimestamps(context.Background(), export, src)
-		btcEstablished, btcCaveat, btcFailed := timestampNotes(rep.Bitcoin, *offline)
-		rep.BitcoinSummary = strings.TrimSpace(btcEstablished)
-		if btcCaveat != "" {
-			rep.Structural.Unverified = append(rep.Structural.Unverified, btcCaveat)
-		}
-		if btcFailed {
-			rep.OK = false
-		}
-
-		// The caveat above says the log's history was not checked. Once
-		// every step IS checked that sentence becomes false, and a false
-		// sentence in the section whose whole job is honesty is the
-		// worst place in the report for one. Narrow it to what actually
-		// remains: the split view, which no consistency proof addresses
-		// and which needs witnesses Sigstore does not yet publish.
-		if growth.Proven > 0 && growth.Unproven == 0 && len(growth.Failures) == 0 {
-			rep.Structural.Unverified = replacePrefix(
-				rep.Structural.Unverified,
-				"Sigstore's signature was checked, but not the log's history",
-				"Sigstore's signature and its growth were both checked, but not whether "+
-					"it showed the same log to everyone. A log that served one version of "+
-					"itself to us and another to somebody else would satisfy everything "+
-					"here. Catching that needs independent observers co-signing the same "+
-					"summaries, and Sigstore's summaries today carry only its own "+
-					"signature. This guards against Sigstore, not against Mesedi.")
-		}
-		if len(growth.Failures) > 0 {
-			rep.OK = false
-			rep.LogGrowthFailed = true
-		}
-		if growth.Unproven > 0 {
-			rep.Structural.Unverified = append(rep.Structural.Unverified,
-				unprovenGrowthNote(growth.Unproven))
-		}
+	rep, err := verifyExport(raw, export, runOptions{
+		Offline: *offline, RekorURL: *rekorURL, BitcoinAPI: *bitcoinAPI,
+		TrustedKeys: trustedKeys, Version: version,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mesedi-verify:", err)
+		os.Exit(2)
 	}
 
 	if *asJSON {
@@ -835,27 +690,26 @@ func printReport(w io.Writer, rep report) {
 	fmt.Fprintln(w)
 
 	// Three verdicts, because "we found a problem" and "we could not
-	// look" must never print the same sentence.
-	var failed, unchecked int
-	for _, e := range rep.LogEntries {
-		switch {
-		case e.failed():
-			failed++
-		case e.unverifiable():
-			unchecked++
-		}
-	}
-
-	switch {
-	case failed > 0 || !rep.Structural.OK:
+	// look" must never print the same sentence. The same verdict the exit
+	// code, the JSON and the PDF use (verdict.go).
+	v := decideVerdict(rep)
+	switch v.Kind {
+	case verdictFailed:
 		fmt.Fprintln(w, "RESULT: FAILED. See the lines marked FAIL above.")
-	case unchecked > 0:
-		fmt.Fprintf(w, "RESULT: INCOMPLETE. %d checkpoint(s) could not be checked "+
-			"against the public log.\n", unchecked)
+		fmt.Fprintln(w, wrap("Failed because "+sentence(v.Failures)+".", 76, ""))
+		if len(v.Gaps) > 0 {
+			fmt.Fprintln(w, wrap("Also not established: "+sentence(v.Gaps)+".", 76, ""))
+		}
+	case verdictIncomplete:
+		fmt.Fprintln(w, wrap("RESULT: INCOMPLETE. "+upperFirst(sentence(v.Gaps))+".", 76, ""))
 		fmt.Fprintln(w, "Nothing here says the record is wrong. Nothing here says it is right")
 		fmt.Fprintln(w, "either. Do not present this as a verified chain.")
 	default:
 		fmt.Fprintln(w, "RESULT: every check that ran passed.")
+		if late := lateSeqs(rep.LogEntries); len(late) > 0 {
+			fmt.Fprintln(w, wrap(fmt.Sprintf("Checkpoints %v were published late, more than %s "+
+				"after their hour ended; each says how late above.", late, humanDuration(lateAfter)), 76, ""))
+		}
 		fmt.Fprintln(w, "The record is intact. That is not the same as the AI having been correct.")
 	}
 }

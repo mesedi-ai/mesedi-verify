@@ -174,11 +174,26 @@ func TestMissingPathBetweenDifferentSizesIsRejected(t *testing.T) {
 // auditor as tampering.
 // ── the walk across an export ────────────────────────────────────────
 
+// liveCheckpoints are the two tree heads Sigstore signed in the
+// 5 September 2026 production run, as the stored proofs carry them. The
+// growth check reads sizes and roots only from signed text like this
+// (the outside review's round 2, 17 November 2026), so a fixture without
+// one counts as unproven. sigLinePrefix supplies the note's em dash.
+var liveCheckpoints = map[int64]string{
+	live24Size: "rekor.sigstore.dev - 1193050959916656506\n2603896653\n" +
+		"6kMDWej35oBBEKT8nLLzgca77p3CZFwSYx6isciIYpo=\n\n" + sigLinePrefix +
+		"rekor.sigstore.dev wNI9ajBFAiB7Hgf8wbh81AQbFNAxsfuJk5z7uqvcetVlebzXjGLljwIhAIRfAIr1ZD/xWODUeVTFTJUSk1okQNu600DVJIpMIckQ\n",
+	live27Size: "rekor.sigstore.dev - 1193050959916656506\n2605579383\n" +
+		"gyFNeRs1X7W2J3tcPRapY4wDxD5Fm1UCkDPzQFs7eSg=\n\n" + sigLinePrefix +
+		"rekor.sigstore.dev wNI9ajBFAiB7VawvAjmawVeLrI29/MIably38Y4BrfhlDtlgtrL/yQIhAORWLAPWebnJ64L93v/jMOTTGFRdPh7hkG8MVrA5/Wed\n",
+}
+
 func intervalWith(t *testing.T, seq uint64, size int64, root, consistency string) attest.ExportedInterval {
 	t.Helper()
+	cp, _ := json.Marshal(liveCheckpoints[size])
 	env := fmt.Sprintf(
-		`{"log_id":"aa","entry_body":"bb","inclusion_proof":{"TreeSize":%d,"RootHash":%q}%s}`,
-		size, root, consistency)
+		`{"log_id":"aa","entry_body":"bb","inclusion_proof":{"TreeSize":%d,"RootHash":%q,"Checkpoint":%s}%s}`,
+		size, root, cp, consistency)
 	return attest.ExportedInterval{
 		Checkpoint:  attest.Checkpoint{Seq: seq},
 		AnchorProof: json.RawMessage(env),

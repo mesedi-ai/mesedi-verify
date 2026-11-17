@@ -96,16 +96,13 @@ func buildPDFDoc(rep report, exportSHA string) pdfDoc {
 	// printed FAILED over an unverifiable chain would accuse Mesedi of
 	// something it is not known to have done, a falsehood in the
 	// opposite direction from the one this tool exists to prevent.
-	var failed, unchecked int
-	for _, e := range rep.LogEntries {
-		switch {
-		case e.failed():
-			failed++
-		case e.unverifiable():
-			unchecked++
-		}
-	}
-	realFailure := failed > 0 || !rep.Structural.OK
+	// The same verdict the text, the JSON and the exit code use
+	// (verdict.go). Until 17 November 2026 this was decided here from the
+	// log entries and the structure alone, so a false Bitcoin receipt or a
+	// broken growth proof printed VERIFIED (the outside review's round 2).
+	v := decideVerdict(rep)
+	realFailure := v.Kind == verdictFailed
+	unchecked := v.Unchecked
 
 	// Counted by METHOD, because the verdict below depends on what was
 	// established rather than on whether the network was used. Driving it
@@ -119,10 +116,10 @@ func buildPDFDoc(rep report, exportSHA string) pdfDoc {
 		Verdict:  "VERIFIED",
 		FooterID: fmt.Sprintf("mesedi-verify %s  |  export %s", rep.Verifier, shorten(exportSHA)),
 	}
-	switch {
-	case realFailure:
+	switch v.Kind {
+	case verdictFailed:
 		d.Verdict = "FAILED"
-	case unchecked > 0:
+	case verdictIncomplete:
 		d.Verdict = "INCOMPLETE"
 	}
 
@@ -131,8 +128,13 @@ func buildPDFDoc(rep report, exportSHA string) pdfDoc {
 	// claims and the difference is the whole product.
 	switch {
 	case realFailure:
-		d.VerdictNote = "One or more checks did not pass. The findings are listed " +
-			"below. Do not rely on this record until each one is explained."
+		d.VerdictNote = "One or more checks did not pass: " + sentence(v.Failures) +
+			". The findings are listed below. Do not rely on this record until each one " +
+			"is explained."
+	case v.Kind == verdictIncomplete && unchecked == 0:
+		d.VerdictNote = "The record holds together, but " + sentence(v.Gaps) +
+			". Nothing here says the record is wrong. Do not present this as a " +
+			"verified record."
 	case unchecked > 0:
 		d.VerdictNote = fmt.Sprintf("The record holds together, but %d checkpoint(s) "+
 			"could not be checked against the public log at all. Nothing here says "+

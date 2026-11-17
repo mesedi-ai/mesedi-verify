@@ -18,6 +18,12 @@ package main
 // key signed them. Owner decision, 16 November 2026: their signer is
 // reported as not checked, and this verifier carries no other company's
 // key. Their content and time stay proven by Sigstore's own signature.
+//
+// WHICH hours count as "before" is decided from Sigstore's signed data,
+// never from the export (owner decision, 17 November 2026). Until then the
+// export's own anchor_kind label decided it, and the export is written by
+// the party being checked: deleting the label made a forged hour, signed
+// by any key, pass as an old one (the outside review's round 2).
 
 import (
 	"crypto/ecdsa"
@@ -31,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mesedi-ai/mesedi/backend/attest"
@@ -41,6 +48,25 @@ const (
 	anchorKindDirect     = "mesedi-direct"
 	anchorKindThirdParty = "verdifax-attest"
 )
+
+// The switch point: the first anchor Mesedi signed itself, the real-log
+// run's first entry on 16 November 2026 (rekor.sigstore.dev, read back from
+// the log). Every Mesedi anchor before it went through the third-party
+// service; none came after. An entry at or past this point, or on any
+// other tree of the log, must be signed by a trusted key whatever the
+// export says. Stated twice because a stored proof gives the position on
+// one tree, signed by Sigstore, and a log lookup gives the position across
+// every tree.
+const (
+	switchTreeOrigin = "rekor.sigstore.dev - 1193050959916656506"
+	switchTreeIndex  = 3811305864
+	switchLogIndex   = 3933210126
+)
+
+// requireSignerAll is the auditor's option to require a trusted signature
+// on every hour, including those published before the switch point
+// (--require-signer-all).
+var requireSignerAll bool
 
 // mesediAnchorKeysPEM are the public halves of Mesedi's anchor signing
 // keys, created on 16 November 2026 and published on mesedi.ai/docs/evidence
@@ -118,7 +144,11 @@ func loadTrustedKeys(paths []string) ([]trustedKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("--trusted-key %s: %w", p, err)
 		}
-		if err := add(raw, "--trusted-key "+p); err != nil {
+		// Named by what it is, not where it sat: the signer line already
+		// gives the key's fingerprint, and a path on the operator's machine
+		// means nothing to the report's reader (the outside review's round
+		// 2, 17 November 2026).
+		if err := add(raw, "a key passed with --trusted-key"); err != nil {
 			return nil, err
 		}
 	}
@@ -133,7 +163,9 @@ func checkSigners(export attest.ChainExport, entries []LogEntryCheck, trusted []
 			return
 		}
 		iv := export.Intervals[i]
-		if iv.AnchorKind != anchorKindDirect {
+		required := iv.AnchorKind == anchorKindDirect || requireSignerAll ||
+			(entries[i].verified() && publishedAfterSwitch(iv, entries[i]))
+		if !required {
 			entries[i].Signer = "not checked: anchored before 16 November 2026 through a third-party service"
 			continue
 		}
@@ -151,6 +183,25 @@ func checkSigners(export attest.ChainExport, entries []LogEntryCheck, trusted []
 			entries[i].Detail += ". Signed by " + signer
 		}
 	}
+}
+
+// publishedAfterSwitch says whether an entry the run has verified sits at
+// or past the switch point, judged only from what the run verified: the
+// position and tree in a stored proof Sigstore signed, or the position the
+// log itself answered for. Anything that cannot be read counts as after,
+// so a missing fact can only make the check stricter.
+func publishedAfterSwitch(iv attest.ExportedInterval, e LogEntryCheck) bool {
+	if e.Method == MethodOfflineProof {
+		var env anchorProof
+		var p wireInclusionProof
+		if json.Unmarshal(iv.AnchorProof, &env) != nil || json.Unmarshal(env.InclusionProof, &p) != nil {
+			return true
+		}
+		origin, _, _ := strings.Cut(p.Checkpoint, "\n")
+		return origin != switchTreeOrigin || p.LogIndex >= switchTreeIndex
+	}
+	idx, err := strconv.ParseInt(iv.LogEntryID, 10, 64)
+	return err != nil || idx >= switchLogIndex
 }
 
 // keyPaths collects repeated --trusted-key flags.

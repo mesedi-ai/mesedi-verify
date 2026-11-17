@@ -66,12 +66,17 @@ func TestMissingEntryIsStillAFailure(t *testing.T) {
 	}
 }
 
-// E5: when, not only where.
-func TestOnTimeAnchorVerifiesWithoutANote(t *testing.T) {
+// E5: when, not only where. An on-time hour is not called late, but its
+// delay is still shown (owner decision, 17 November 2026: every delay is
+// shown, so one under the late point is never silent).
+func TestOnTimeAnchorShowsItsDelayWithoutCallingItLate(t *testing.T) {
 	srv := fakeRekor(t, map[string]map[string]any{"7": timedEntry(t, hourStart.Add(65*time.Minute))})
 	got := resolveLogEntries(attest.ChainExport{Intervals: []attest.ExportedInterval{timedInterval(1, "7", hourStart)}}, srv.URL, false)[0]
-	if !got.verified() || got.LateBy != 0 || strings.Contains(got.Detail, "after this hour ended") {
-		t.Fatalf("an on-time anchor: status %q, late %s, detail %s", got.Status, got.LateBy, got.Detail)
+	if !got.verified() || got.LateBy != 0 || got.PublishedAfter != 5*time.Minute ||
+		!strings.Contains(got.Detail, "published 5 minutes after this hour ended") ||
+		strings.Contains(got.Detail, "A late anchor") {
+		t.Fatalf("an on-time anchor: status %q, late %s, after %s, detail %s",
+			got.Status, got.LateBy, got.PublishedAfter, got.Detail)
 	}
 }
 

@@ -2,8 +2,7 @@ MIT License
 
 Copyright (c) 2026 Verdifax, LLC d/b/a Mesedi
 
-This licence covers the mesedi-verify verifier in this directory ONLY. The
-rest of this repository is proprietary and is not licensed by this file.
+This licence covers everything in this repository.
 
 The verifier is MIT on purpose. It is the program that adjudicates whether
 Mesedi's records hold up, and an auditor cannot be asked to trust a

@@ -80,9 +80,15 @@ type LogEntryCheck struct {
 	Integrated time.Time
 
 	// LateBy is how long after its hour ended the log recorded the entry,
-	// when that exceeds lateAnchorTolerance. Zero when on time or when no
-	// time was available.
+	// when that exceeds the "late" point (--late-after). Zero when on time
+	// or when no time was available.
 	LateBy time.Duration
+
+	// PublishedAfter is how long after its hour ended the log recorded the
+	// entry, whenever the time was checked; TooLate is true when that is
+	// more than --max-late allows.
+	PublishedAfter time.Duration
+	TooLate        bool
 
 	// TimeChecked is true when the log's recorded time was compared with
 	// the hour the checkpoint covers. A stored inclusion proof carries no
@@ -282,8 +288,8 @@ type logUnreachable struct{ err error }
 func (u logUnreachable) Error() string { return u.err.Error() }
 func (u logUnreachable) Unwrap() error { return u.err }
 
-// lateAnchorTolerance is how long after its hour ends a checkpoint may be
-// published and still count as on time. The scheduler publishes within
+// lateAnchorTolerance is the default for how long after its hour ends a
+// checkpoint may be published and still count as on time (--late-after). The scheduler publishes within
 // minutes; anything later is catch-up after downtime, or backdating, and
 // the report names it (Robert's decision, 2026-11-16; the outside review of 2026-11-15).
 const lateAnchorTolerance = 2 * time.Hour

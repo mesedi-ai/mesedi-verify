@@ -44,7 +44,27 @@ out the version the report states before building.
     mesedi-verify --max-late 24h export.json
                                             an hour published more than this
                                             after it ended makes the run
-                                            INCOMPLETE (default: no maximum)
+                                            INCOMPLETE and is listed as late
+                                            (default: no maximum); so does an
+                                            hour whose publication time is
+                                            not known
+    mesedi-verify --max-late 24h --accept-unknown-time export.json
+                                            accept hours whose publication
+                                            time is not known (offline, or
+                                            the log gave none): VERIFIED,
+                                            with a caveat naming them
+    mesedi-verify --single-failure-code export.json
+                                            exit 1 for INCOMPLETE as well as
+                                            FAILED, as earlier versions did
+    mesedi-verify --run run.json --report-key k1=key.pub export.json
+                                            also open one agent run: a
+                                            single-run file from
+                                            GET /executions/{id}/export,
+                                            checked against this hourly
+                                            file; --report-key is your own
+                                            copy of a report signing public
+                                            key (base64, or a file); both
+                                            may be repeated
     mesedi-verify --require-signer-all export.json
                                             require a trusted signature on
                                             every hour, including hours
@@ -80,7 +100,19 @@ out the version the report states before building.
   checkpoint UNVERIFIABLE, never FAILED: the record is not known to be
   wrong, it just could not be checked.
 - Agent runs that received events after their hour was anchored are
-  named: those events are kept, but the anchor does not cover them.
+  named, and counted in the JSON (`structural.runs_with_events_after_anchoring`):
+  those events are kept, but the anchor does not cover them.
+- **Opened agent runs** (`--run`). The hourly file proves the set of
+  runs is complete and unaltered, but not what any run said. A
+  single-run file carries one run's reports, their chain records and
+  signatures. The checker rebuilds the run's digest from its reports
+  and compares it with the one the hour anchored, recomputes every
+  report fingerprint, checks the chain forms one unbroken path, and
+  verifies every signature, against your own copy of the public key
+  when you give one with `--report-key`. A report Mesedi redacted on
+  arrival to remove a secret is named, not failed. A valid signature
+  shows who sent the reports, not that they are true: whoever holds
+  every key can still invent reports.
 - **One verdict.** The exit code, the JSON (`verdict` and `ok`), the
   text RESULT line and the PDF all read the same result: FAILED if any
   check failed (the record, a checkpoint, the log's growth or a Bitcoin
@@ -93,13 +125,20 @@ out the version the report states before building.
 
 ## Exit codes
 
-    0  Every check passed and every checkpoint was actually checked.
-    1  A check failed, or a checkpoint could not be checked at all.
-       Both are non-zero on purpose: a pipeline gating on exit 0 must
-       not go green for a chain nobody was able to verify.
-    2  The export could not be read or parsed, or a requested report
-       could not be written. Separate from 1 on purpose: "we could not
-       run the check" and "the check failed" must not look alike.
+    0  VERIFIED: every check passed and every checkpoint was actually
+       checked.
+    1  FAILED: a check failed.
+    2  The export or a run file could not be read or parsed, a flag is
+       wrong, or a requested report could not be written. Separate on
+       purpose: "we could not run the check" and "the check failed"
+       must not look alike.
+    3  INCOMPLETE: nothing failed, but something could not be
+       established (a checkpoint not checked, an hour past --max-late or
+       with an unknown time, an opened run that could not be tied to
+       its anchor). With --single-failure-code this is 1, as it was in
+       earlier versions. INCOMPLETE and FAILED are both non-zero on
+       purpose: a pipeline gating on exit 0 must not go green for a
+       chain nobody was able to verify.
 
 ## History
 

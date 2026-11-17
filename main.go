@@ -149,6 +149,16 @@ type report struct {
 	Structural  attest.ExportVerification `json:"structural"`
 	LogEntries  []LogEntryCheck           `json:"log_entries,omitempty"`
 
+	// Runs are the agent runs opened with --run.
+	Runs []attest.RunVerification `json:"runs,omitempty"`
+	// ReportChains counts the hourly file's runs by Mesedi's recorded
+	// report-chain verdict.
+	ReportChains string `json:"report_chains,omitempty"`
+
+	// Notices are said first, before any result: settings that change
+	// what the run could establish (an offline run given --max-late).
+	Notices []string `json:"notices,omitempty"`
+
 	// LogSummary is what the run ESTABLISHED about the transparency log.
 	//
 	// Separate from Structural.Unverified, which carries what it did not.
@@ -211,14 +221,36 @@ func main() {
 		requireAll = flag.Bool("require-signer-all", false,
 			"require a trusted signature on every hour, including hours published before 16 November 2026")
 		maxLateFlag = flag.Duration("max-late", 0,
-			"an hour published more than this after it ended makes the run INCOMPLETE (0: no maximum)")
+			"an hour published more than this after it ended makes the run INCOMPLETE, and is "+
+				"listed as late (0: no maximum); an hour whose publication time is unknown also "+
+				"makes it INCOMPLETE, unless --accept-unknown-time")
+		acceptUnknown = flag.Bool("accept-unknown-time", false,
+			"with --max-late, accept hours whose publication time is not known (offline, or the "+
+				"log gave none) and report VERIFIED with a caveat naming them")
+		runFiles          keyPaths
+		reportKeys        reportKeyFlags
+		singleFailureCode = flag.Bool("single-failure-code", false,
+			"exit 1 for INCOMPLETE as well as FAILED, as earlier versions did (default: 3 for INCOMPLETE)")
 	)
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "usage: mesedi-verify [flags] export.json\n\n"+
+			"Exit codes: 0 VERIFIED, 1 FAILED, 2 the file could not be read or a flag is wrong,\n"+
+			"3 INCOMPLETE (1 with --single-failure-code).\n\nFlags:\n")
+		flag.PrintDefaults()
+	}
+	flag.Var(&runFiles, "run",
+		"also open one agent run: a single-run file from GET /executions/{id}/export, checked "+
+			"against this hourly file (its reports, chain and signatures); may be repeated")
+	flag.Var(&reportKeys, "report-key",
+		"key_id=BASE64 (or key_id=FILE): your own copy of a report signing public key, used "+
+			"instead of the copy in the run file; may be repeated")
 	flag.Var(&trustedKeys, "trusted-key",
 		"a PEM public key whose anchors to trust, besides Mesedi's published keys "+
 			"(for a self-hosted deployment's own key); may be repeated")
 	flag.Parse()
 
 	lateAfter, maxLate, requireSignerAll = *lateAfterFlag, *maxLateFlag, *requireAll
+	acceptUnknownTime = *acceptUnknown
 	if lateAfter < 0 || maxLate < 0 {
 		fmt.Fprintln(os.Stderr, "mesedi-verify: --late-after and --max-late cannot be negative")
 		os.Exit(2)
@@ -242,9 +274,24 @@ func main() {
 		os.Exit(2)
 	}
 
+	readerKeys, err := parseReportKeys(reportKeys)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mesedi-verify:", err)
+		os.Exit(2)
+	}
+	var runs []attest.RunExport
+	for _, path := range runFiles {
+		r, err := readRunFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mesedi-verify:", err)
+			os.Exit(2)
+		}
+		runs = append(runs, r)
+	}
+
 	rep, err := verifyExport(raw, export, runOptions{
 		Offline: *offline, RekorURL: *rekorURL, BitcoinAPI: *bitcoinAPI,
-		TrustedKeys: trustedKeys, Version: version,
+		TrustedKeys: trustedKeys, Version: version, Runs: runs, ReportKeys: readerKeys,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mesedi-verify:", err)
@@ -267,8 +314,25 @@ func main() {
 		}
 	}
 
-	if !rep.OK {
-		os.Exit(1)
+	os.Exit(exitCode(rep.Verdict, *singleFailureCode))
+}
+
+// exitCode maps the verdict to the process exit status (round 3,
+// finding L1; owner decision, 17 November 2026): 0 VERIFIED, 1 FAILED,
+// 3 INCOMPLETE, so a script can tell "something was found wrong" from
+// "something could not be established". 2 stays for an unreadable file
+// or a wrong flag. --single-failure-code keeps the earlier single 1.
+func exitCode(verdict string, singleFailureCode bool) int {
+	switch verdict {
+	case verdictVerified:
+		return 0
+	case verdictIncomplete:
+		if singleFailureCode {
+			return 1
+		}
+		return 3
+	default:
+		return 1
 	}
 }
 
@@ -635,6 +699,9 @@ func printReport(w io.Writer, rep report) {
 	fmt.Fprintf(w, "  export written %s\n", rep.GeneratedAt.Format(time.RFC3339))
 	fmt.Fprintf(w, "  verified       %s by mesedi-verify %s\n\n",
 		rep.VerifiedAt.Format(time.RFC3339), rep.Verifier)
+	for _, n := range rep.Notices {
+		fmt.Fprintf(w, "NOTE: %s\n\n", wrap(n, 74, "      "))
+	}
 
 	fmt.Fprintln(w, "STRUCTURE")
 	for _, c := range rep.Structural.Checks {
@@ -682,6 +749,19 @@ func printReport(w io.Writer, rep report) {
 	// Printed for passing runs too, and at the same weight as the results.
 	// A report that lists only what passed invites the reader to assume
 	// everything was checked.
+	if rep.ReportChains != "" || len(rep.Runs) > 0 {
+		fmt.Fprintln(w, "\nAGENT RUNS")
+		if rep.ReportChains != "" {
+			fmt.Fprintf(w, "  %s\n", wrap(rep.ReportChains, 76, "  "))
+		}
+		for _, run := range rep.Runs {
+			fmt.Fprintf(w, "\n  run %s: chain %s\n", run.ExecutionID, run.ChainStatus)
+			for _, c := range run.Checks {
+				fmt.Fprintf(w, "  %s %-34s %s\n", mark(c.OK), c.Name, wrap(c.Detail, 74, strings.Repeat(" ", 42)))
+			}
+		}
+	}
+
 	fmt.Fprintln(w, "\nWHAT THIS REPORT DOES NOT SHOW")
 	for _, u := range rep.Structural.Unverified {
 		fmt.Fprintf(w, "  - %s\n", wrap(u, 74, "    "))
@@ -708,7 +788,7 @@ func printReport(w io.Writer, rep report) {
 		fmt.Fprintln(w, "RESULT: every check that ran passed.")
 		if late := lateSeqs(rep.LogEntries); len(late) > 0 {
 			fmt.Fprintln(w, wrap(fmt.Sprintf("Checkpoints %v were published late, more than %s "+
-				"after their hour ended; each says how late above.", late, humanDuration(lateAfter)), 76, ""))
+				"after their hour ended; each says how late above.", late, humanDuration(lateThreshold())), 76, ""))
 		}
 		fmt.Fprintln(w, "The record is intact. That is not the same as the AI having been correct.")
 	}

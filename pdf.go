@@ -173,6 +173,11 @@ func buildPDFDoc(rep report, exportSHA string) pdfDoc {
 			"public log, so this does not show the record was ever published. It is a " +
 			"consistency check, not evidence."
 	}
+	// Notices come first in the text report; in the PDF they lead the
+	// note beside the verdict, where the reader of the verdict sees them.
+	if len(rep.Notices) > 0 {
+		d.VerdictNote = strings.Join(rep.Notices, " ") + " " + d.VerdictNote
+	}
 
 	// Leads with what WAS established, then how.
 	//
@@ -274,6 +279,20 @@ func buildPDFDoc(rep report, exportSHA string) pdfDoc {
 				Detail: rep.BitcoinSummary})
 		}
 		d.Sections = append(d.Sections, btc)
+	}
+
+	if rep.ReportChains != "" || len(rep.Runs) > 0 {
+		runs := pdfSection{Title: "AGENT RUNS"}
+		if rep.ReportChains != "" {
+			runs.Rows = append(runs.Rows, pdfRow{Mark: "[ -- ]", Label: "as Mesedi recorded", Detail: rep.ReportChains})
+		}
+		for _, run := range rep.Runs {
+			for _, c := range run.Checks {
+				runs.Rows = append(runs.Rows, pdfRow{Mark: mark(c.OK),
+					Label: fmt.Sprintf("run %s", shorten(run.ExecutionID)), Detail: c.Name + ": " + c.Detail})
+			}
+		}
+		d.Sections = append(d.Sections, runs)
 	}
 
 	// Carried verbatim from the verification result. Rewording them here

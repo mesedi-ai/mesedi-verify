@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -23,6 +24,10 @@ type runOptions struct {
 	BitcoinAPI  string
 	TrustedKeys []string
 	Version     string
+	// Runs are single-run files to open (--run); ReportKeys the reader's
+	// own report signing keys (--report-key).
+	Runs       []attest.RunExport
+	ReportKeys map[string]ed25519.PublicKey
 }
 
 func verifyExport(raw []byte, export attest.ChainExport, o runOptions) (report, error) {
@@ -50,6 +55,13 @@ func verifyExport(raw []byte, export attest.ChainExport, o runOptions) (report, 
 	// November 2026 only the dashboard said so; the auditor holding the
 	// export was told the set of runs was complete (the outside review's
 	// round 2).
+	if o.Offline && maxLate > 0 {
+		rep.Notices = append(rep.Notices, "--max-late cannot be checked offline: an inclusion "+
+			"proof carries no time. "+map[bool]string{
+			true:  "--accept-unknown-time was given, so the run may still be VERIFIED, with a caveat.",
+			false: "This run will be INCOMPLETE; run online to apply the maximum, or add --accept-unknown-time.",
+		}[acceptUnknownTime])
+	}
 	if note := eventsAfterAnchoringNote(export); note != "" {
 		rep.Structural.Unverified = append(rep.Structural.Unverified, note)
 	}
@@ -130,6 +142,11 @@ func verifyExport(raw []byte, export attest.ChainExport, o runOptions) (report, 
 		if signerCaveat != "" {
 			rep.Structural.Unverified = append(rep.Structural.Unverified, signerCaveat)
 		}
+		if unknown := timeUnknownSeqs(rep.LogEntries); maxLate > 0 && acceptUnknownTime && len(unknown) > 0 {
+			rep.Structural.Unverified = append(rep.Structural.Unverified, fmt.Sprintf(
+				"--max-late was NOT applied to checkpoints %v, whose publication time is not "+
+					"known; --accept-unknown-time accepted them.", unknown))
+		}
 		if timeCaveat != "" {
 			rep.Structural.Unverified = append(rep.Structural.Unverified, timeCaveat)
 		}
@@ -197,6 +214,25 @@ func verifyExport(raw []byte, export attest.ChainExport, o runOptions) (report, 
 	}
 
 	// One verdict, decided once, for every output and the exit code.
+	rep.ReportChains = reportChainSummary(export)
+	rep.Runs = checkRuns(export, o.Runs, o.ReportKeys)
+	if len(rep.Runs) > 0 {
+		// The structural caveat says no run was opened; with --run some
+		// were, and the report must not say otherwise.
+		for i, u := range rep.Structural.Unverified {
+			if rest, ok := strings.CutPrefix(u, "The agent runs themselves were not opened. "); ok {
+				rep.Structural.Unverified[i] = fmt.Sprintf("Only %s listed under AGENT RUNS %s opened. "+
+					"For the rest: %s", countOf(len(rep.Runs), "run", "runs"),
+					map[bool]string{true: "was", false: "were"}[len(rep.Runs) == 1], lowerFirst(rest))
+			}
+		}
+	}
+	for _, run := range rep.Runs {
+		for _, u := range run.Unverified {
+			rep.Structural.Unverified = appendOnce(rep.Structural.Unverified, "Run "+run.ExecutionID+": "+u)
+		}
+	}
+
 	v := decideVerdict(rep)
 	rep.Verdict = v.Kind
 	rep.VerdictReasons = append(append([]string(nil), v.Failures...), v.Gaps...)
@@ -229,4 +265,22 @@ func eventsAfterAnchoringNote(export attest.ChainExport) string {
 		"anchored. Those events are kept, but the anchor does not cover them, so this "+
 		"report says nothing about them.",
 		countOf(runs, "agent run", "agent runs"), seqs, countOf(events, "event", "events"))
+}
+
+// appendOnce appends s unless it is already present.
+func appendOnce(lines []string, s string) []string {
+	for _, l := range lines {
+		if l == s {
+			return lines
+		}
+	}
+	return append(lines, s)
+}
+
+// lowerFirst lowers a sentence's first letter.
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
 }

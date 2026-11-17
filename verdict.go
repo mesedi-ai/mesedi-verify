@@ -86,6 +86,23 @@ func decideVerdict(rep report) verdict {
 			"after their hour ended, the most this run was told to accept", tooLate,
 			humanDuration(maxLate)))
 	}
+	// A maximum that could not be applied is never reported as applied
+	// (round 3, finding M1): with --max-late set, an hour whose
+	// publication time is unknown makes the run INCOMPLETE, unless the
+	// auditor accepts unknown times with --accept-unknown-time.
+	if unknown := timeUnknownSeqs(rep.LogEntries); maxLate > 0 && len(unknown) > 0 && !acceptUnknownTime {
+		why := "the log did not give their time"
+		if !rep.Online {
+			why = "this run was offline, and an inclusion proof carries no time"
+		}
+		v.Gaps = append(v.Gaps, fmt.Sprintf("checkpoints %v could not be compared with "+
+			"--max-late, because when they were published is not known (%s)", unknown, why))
+	}
+
+	// Runs opened with --run add their own findings, named by run.
+	runFailures, runGaps := runReasons(rep.Runs)
+	v.Failures = append(v.Failures, runFailures...)
+	v.Gaps = append(v.Gaps, runGaps...)
 
 	switch {
 	case len(v.Failures) > 0:

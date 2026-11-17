@@ -65,7 +65,12 @@ func applyPublicationTime(check *LogEntryCheck, integrated time.Time, iv attest.
 		after = 0
 	}
 	check.PublishedAfter = after
-	if after > lateAfter {
+	// An hour past the maximum is always also listed as late, even when
+	// the maximum is below the "late" point (round 3, finding L3; owner
+	// decision, 17 November 2026): until then such a run was INCOMPLETE
+	// with an empty late list, contradicting itself.
+	tooLate := maxLate > 0 && after > maxLate
+	if after > lateAfter || tooLate {
 		check.LateBy = after
 		check.Detail += fmt.Sprintf(", but published %s after this hour ended. A late "+
 			"anchor proves the record existed when it was published, not when its hour "+
@@ -73,7 +78,7 @@ func applyPublicationTime(check *LogEntryCheck, integrated time.Time, iv attest.
 	} else {
 		check.Detail += fmt.Sprintf(", published %s after this hour ended", humanDuration(after))
 	}
-	if maxLate > 0 && after > maxLate {
+	if tooLate {
 		check.TooLate = true
 		check.Detail += fmt.Sprintf(". That is more than %s, the most this run was told to "+
 			"accept (--max-late)", humanDuration(maxLate))
@@ -89,7 +94,35 @@ func applyPublicationTime(check *LogEntryCheck, integrated time.Time, iv attest.
 var (
 	lateAfter = lateAnchorTolerance
 	maxLate   time.Duration // zero: no maximum
+	// acceptUnknownTime lets a run with --max-late be VERIFIED when some
+	// hour's publication time is not known (offline, or the log gave no
+	// time), with a caveat naming them (--accept-unknown-time). Without
+	// it such a run is INCOMPLETE: a policy the run could not apply is
+	// never reported as applied (round 3, finding M1; owner decision,
+	// 17 November 2026).
+	acceptUnknownTime bool
 )
+
+// lateThreshold is the delay past which an hour is listed as late: the
+// --late-after point, or the --max-late maximum when that is lower.
+func lateThreshold() time.Duration {
+	if maxLate > 0 && maxLate < lateAfter {
+		return maxLate
+	}
+	return lateAfter
+}
+
+// timeUnknownSeqs lists checkpoints that verified but whose publication
+// time was not compared with their hour.
+func timeUnknownSeqs(entries []LogEntryCheck) []uint64 {
+	var out []uint64
+	for _, e := range entries {
+		if e.verified() && !e.TimeChecked {
+			out = append(out, e.Seq)
+		}
+	}
+	return out
+}
 
 // humanDuration renders a delay for a reader: minutes under an hour,
 // hours and minutes under two days, whole days after that.
@@ -133,7 +166,7 @@ func publicationTimingNotes(entries []LogEntryCheck, offline bool) (lateNote, ti
 		lateNote = fmt.Sprintf(" Checkpoints %v were published more than %s after "+
 			"their hour ended; each says how late above. A late anchor proves the record "+
 			"existed when it was published, not when its hour ended.",
-			late, humanDuration(lateAfter))
+			late, humanDuration(lateThreshold()))
 	}
 	switch {
 	case len(unchecked) == 0:
